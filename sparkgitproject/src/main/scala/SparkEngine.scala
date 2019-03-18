@@ -1,15 +1,85 @@
+import SparkEngine.{schema, ufDF}
+import SparkFormActor.UserFormDs
+import SparkManager.SparkDataSet
+import akka.actor.{Actor, ActorLogging, Props}
 import org.apache.spark
 import org.apache.spark.SparkContext
 import org.apache.spark.SparkConf
 import org.apache.spark.SparkContext._
 
+
 import scala.util.Random
 import org.apache.spark.sql.types._
 import org.apache.spark.sql._
+import org.apache.spark.sql.functions.from_json
 
-case class Address(country: String, city: String, street: String, buildingNumber: Int)
-case class UserForm(name: String, password: String, age: Int, email: String, favSuperhero: String,
-                    whyThisSuperhero: Option[String], address: Address)
+object SparkManager {
+  def props: Props = Props(new SparkManager)
+
+  final case class SparkDataSet[T](ds: Dataset[T], dfType: String, ss: SparkSession)
+}
+class SparkManager extends Actor with ActorLogging {
+  val sparkFormActor = context.actorOf(SparkFormActor.props, "SparkChildFormActor")
+  context.watch(sparkFormActor)
+  override def preStart(): Unit = {
+    log.info("Spark Manager has Started!")
+  }
+
+  override def postStop(): Unit = {
+    log.info("SparkManagerActor has Stopped!")
+  }
+
+  override def receive: Receive = {
+    case SparkDataSet(ds, "UserForm", ss) => {
+      sparkFormActor ! UserFormDs(ds, ss)
+    }
+  }
+}
+
+object SparkFormActor {
+  def props: Props = Props(new SparkFormActor)
+
+  final case class UserFormDs[T](ds: Dataset[T], ss: SparkSession)
+}
+
+class SparkFormActor extends Actor with ActorLogging {
+
+  def ageStatus(age: Int): String = {
+    age match {
+      case age if (age > 40 &&  age <= 65) => "Old"
+      case age if (age >= 25 && age <= 40) => "middle aged"
+      case age if (age >= 18 && age <=25) => "Young"
+      case _ => "age is not in range of 18-65"
+    }
+  }
+
+  override def preStart(): Unit = {
+    log.info("SparkFormActor has Started!")
+  }
+
+  override def postStop(): Unit = {
+    log.info("SparkFormActor has Stopped!")
+  }
+
+  override def receive: Receive = {
+    case UserFormDs(ds, ss) => {
+      import ss.implicits._
+      import org.apache.spark.sql.functions._
+      val dsNew = ds.select($"value" cast "string" as "json")
+        .select(from_json($"json", schema) as "data")
+        .select("data.*")
+      //printing schema of dsNew
+      dsNew.printSchema()
+      //drop rows that have missing data in every single row
+      dsNew.na.drop("all")
+      //registering as udf
+      val ageStatusUDF = udf(ageStatus(_: Int): String)
+      //using udf
+      val dsWithAgeStatus = ds.select($"name", $"age", ageStatusUDF($"age").as("ageStatus"))
+      println("---- " + ds.getClass)
+    }
+  }
+}
 
 object SparkEngine extends App{
 
@@ -36,22 +106,11 @@ object SparkEngine extends App{
     .option("subscribe", "test")
     .option("startingOffsets", """{"test": {"0":-2} }""")
     .load()
+  println("--------" + ufDF.getClass)
 
-  val ds = ufDF.select($"value" cast "string" as "json")
-    .select(from_json($"json", schema) as "data")
-    .select("data.*", "data.address.*")
-  /*
-  val ds = ufDF.select($"value" cast "string" as "json")
-      .select(from_json($"json", schema) as "data")
-      .select("data.name", "data.age", "data.email", "data.favSuperhero", "data.whyThisSuperhero",
-      "data.address.country", "data.address.city", "data.address.street", "data.address.buildingNumber")*/
 
-  //val dasda = ufDF.selectExpr("CAST(value AS STRING)")
-  //println("----------- " + dasda)
-  //ufDF.printSchema()
-
-  ds.printSchema()
-  val result = ds.writeStream.format("console").start()
+  //writing to console
+  val result = dsWithAgeStatus.writeStream.format("console").start()
 
   //val result = ufDF.writeStream.outputMode("complete").format("console").start()
   result.awaitTermination()
