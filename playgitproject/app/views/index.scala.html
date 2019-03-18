@@ -1,0 +1,22 @@
+@import helper._
+@(userForm: Form[UserForm])(implicit messages: Messages)
+
+@main("Form Page") {
+    <h1>Please Fill The Form Below</h1>
+
+    @form(action = routes.HomeController.userFormPost()) {
+        @inputText(userForm("name"))
+        @inputPassword(userForm("password"))
+        @inputText(userForm("age"), '_showConstraints -> false)
+        @inputText(userForm("email"))
+        @inputRadioGroup(userForm("favSuperhero"), UserForm.Preferences.values.toSeq.map(choice =>
+        choice.toString -> choice.toString))
+        @textarea(userForm("whyThisSuperhero"))
+        @inputText(userForm("address.country"), '_label -> "country")
+        @inputText(userForm("address.city"), '_label -> "city")
+        @inputText(userForm("address.street"), '_label -> "street")
+        @inputText(userForm("address.buildingNumber"), '_label -> "Building Number")
+
+        <input type="submit" value="Submit">
+    }
+}
