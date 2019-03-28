@@ -2,7 +2,7 @@ name := "untitled"
 
 version := "0.1"
 
-scalaVersion := "2.12.8"
+scalaVersion := "2.11.7"
 
 // https://mvnrepository.com/artifact/org.apache.spark/spark-core
 libraryDependencies += "org.apache.spark" %% "spark-core" % "2.4.0"
@@ -20,3 +20,6 @@ dependencyOverrides += "com.fasterxml.jackson.core" % "jackson-databind" % "2.6.
 
 // https://mvnrepository.com/artifact/com.typesafe.akka/akka-actor
 libraryDependencies += "com.typesafe.akka" %% "akka-actor" % "2.5.21"
+
+// https://mvnrepository.com/artifact/com.datastax.spark/spark-cassandra-connector
+libraryDependencies += "com.datastax.spark" %% "spark-cassandra-connector" % "2.4.1"

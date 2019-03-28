@@ -1,22 +1,19 @@
+import java.util.UUID
 import SparkEngine.{schema, ufDF}
 import SparkFormActor.UserFormDs
-import SparkManager.SparkDataSet
-import akka.actor.{Actor, ActorLogging, Props}
-import org.apache.spark
-import org.apache.spark.SparkContext
-import org.apache.spark.SparkConf
-import org.apache.spark.SparkContext._
-
-
-import scala.util.Random
+import SparkManager.{DsFromChild, SparkDataSet}
+import akka.actor.{Actor, ActorLogging, ActorSystem, Props}
 import org.apache.spark.sql.types._
 import org.apache.spark.sql._
-import org.apache.spark.sql.functions.from_json
 
 object SparkManager {
   def props: Props = Props(new SparkManager)
 
-  final case class SparkDataSet[T](ds: Dataset[T], dfType: String, ss: SparkSession)
+  final case class SparkDataSet[T](ds: Dataset[T], dfType: HighData, ss: SparkSession)
+  final case class DsFromChild[T](ds: Dataset[T])
+  trait HighData
+  object UserFormData extends HighData
+  object LogData extends HighData
 }
 class SparkManager extends Actor with ActorLogging {
   val sparkFormActor = context.actorOf(SparkFormActor.props, "SparkChildFormActor")
@@ -30,8 +27,11 @@ class SparkManager extends Actor with ActorLogging {
   }
 
   override def receive: Receive = {
-    case SparkDataSet(ds, "UserForm", ss) => {
+    case SparkDataSet(ds, SparkManager.UserFormData, ss) => {
       sparkFormActor ! UserFormDs(ds, ss)
+    }
+    case DsFromChild(ds) => {
+      sender() ! ds
     }
   }
 }
@@ -46,9 +46,9 @@ class SparkFormActor extends Actor with ActorLogging {
 
   def ageStatus(age: Int): String = {
     age match {
-      case age if (age > 40 &&  age <= 65) => "Old"
-      case age if (age >= 25 && age <= 40) => "middle aged"
-      case age if (age >= 18 && age <=25) => "Young"
+      case age if age > 40 &&  age <= 65 => "Old"
+      case age if age >= 25 && age <= 40 => "middle aged"
+      case age if age >= 18 && age <=25 => "Young"
       case _ => "age is not in range of 18-65"
     }
   }
@@ -76,8 +76,42 @@ class SparkFormActor extends Actor with ActorLogging {
       val ageStatusUDF = udf(ageStatus(_: Int): String)
       //using udf
       val dsWithAgeStatus = ds.select($"name", $"age", ageStatusUDF($"age").as("ageStatus"))
+      //generate uuid
+      val generateUuid = udf(() => UUID.randomUUID())
+      val dsWithUuid = dsWithAgeStatus.withColumn("id", generateUuid())
       println("---- " + ds.getClass)
+      sender() ! DsFromChild(dsWithUuid)
     }
+  }
+}
+
+object CassandraActor {
+  def props: Props = Props(new CassandraActor)
+
+  final case class DatatoCs[T](ds : Dataset[T], dataType: dataType)
+  final case class UserData(id: UUID, firstname: String, lastname: String, age: Int, favSuperhero: String,
+                            whyThisSuperhero: String, Address: String)
+  trait dataType
+  object UserDataType extends dataType
+  object LogDataType extends dataType
+}
+
+class CassandraActor extends Actor with ActorLogging {
+  import CassandraActor._
+  override def preStart(): Unit = {
+    log.info("cassandra actor has started")
+  }
+
+  override def postStop(): Unit = {
+    log.info("cassandra actor has stopped")
+  }
+
+  override def receive: Receive = {
+    case DatatoCs(ds, UserDataType) =>
+      ds.write.format("org.apache.spark.sql.cassandra")
+              .options(Map("keyspace" -> "projectjod", "table" -> "user"))
+              .mode(SaveMode.Append)
+              .save()
   }
 }
 
@@ -97,10 +131,13 @@ object SparkEngine extends App{
       .add("street", StringType)
       .add("buildingNumber", IntegerType))
 
-  val ss = SparkSession.builder().appName("sparkEngine").master("local[*]").getOrCreate()
+  val ss = SparkSession.builder().appName("sparkEngine").master("local[*]")
+          .config("spark.cassandra.connection.host", "127.0.0.1").getOrCreate()
   ss.sparkContext.setLogLevel("ERROR")
+
   import ss.implicits._
   import org.apache.spark.sql.functions._
+
   val ufDF = ss.readStream.format("kafka")
     .option("kafka.bootstrap.servers", "localhost:9092")
     .option("subscribe", "test")
@@ -108,9 +145,18 @@ object SparkEngine extends App{
     .load()
   println("--------" + ufDF.getClass)
 
+  val system = ActorSystem("ActorSystem")
+  val sManagerActor = system.actorOf(SparkManager.props, "Spark-Manager-Actor")
 
+  import scala.concurrent.duration._
+  import akka.util.Timeout
+  implicit val timeout = Timeout(5 seconds)
+  import akka.pattern.ask
+  val future = sManagerActor ? SparkDataSet(ufDF, SparkManager.UserFormData, ss)
+  import scala.concurrent.Await
+  val ans = Await.result(future, timeout.duration).asInstanceOf[Dataset]
   //writing to console
-  val result = dsWithAgeStatus.writeStream.format("console").start()
+  val result = ans.writeStream.format("console").start()
 
   //val result = ufDF.writeStream.outputMode("complete").format("console").start()
   result.awaitTermination()
