@@ -1,8 +1,9 @@
 import java.util.UUID
-import SparkEngine.{schema, ufDF}
+
+import SparkEngine.schema
 import SparkFormActor.UserFormDs
-import SparkManager.{DsFromChild, SparkDataSet}
-import akka.actor.{Actor, ActorLogging, ActorSystem, Props}
+import SparkManager.{DsFromChild, DsFromChildToCassandra, SparkDataSet}
+import akka.actor.{Actor, ActorLogging, ActorRef, ActorSystem, Props}
 import org.apache.spark.sql.types._
 import org.apache.spark.sql._
 
@@ -11,6 +12,7 @@ object SparkManager {
 
   final case class SparkDataSet[T](ds: Dataset[T], dfType: HighData, ss: SparkSession)
   final case class DsFromChild[T](ds: Dataset[T])
+  final case class DsFromChildToCassandra[T](ds: Dataset[T])
   trait HighData
   object UserFormData extends HighData
   object LogData extends HighData
@@ -18,6 +20,8 @@ object SparkManager {
 class SparkManager extends Actor with ActorLogging {
   val sparkFormActor = context.actorOf(SparkFormActor.props, "SparkChildFormActor")
   context.watch(sparkFormActor)
+  val cassandraActor = context.actorOf(CassandraActor.props, "CassandraChildActor")
+  context.watch(cassandraActor)
   override def preStart(): Unit = {
     log.info("Spark Manager has Started!")
   }
@@ -32,6 +36,9 @@ class SparkManager extends Actor with ActorLogging {
     }
     case DsFromChild(ds) => {
       sender() ! ds
+    }
+    case DsFromChildToCassandra(ds) => {
+      cassandraActor ! CassandraActor.DatatoCs(ds, CassandraActor.UserDataType)
     }
   }
 }
@@ -75,12 +82,16 @@ class SparkFormActor extends Actor with ActorLogging {
       //registering as udf
       val ageStatusUDF = udf(ageStatus(_: Int): String)
       //using udf
-      val dsWithAgeStatus = ds.select($"name", $"age", ageStatusUDF($"age").as("ageStatus"))
+      //val dsWithAgeStatus = ds.select($"name", $"age", ageStatusUDF($"age").as("ageStatus"))
       //generate uuid
-      val generateUuid = udf(() => UUID.randomUUID())
-      val dsWithUuid = dsWithAgeStatus.withColumn("id", generateUuid())
-      println("---- " + ds.getClass)
-      sender() ! DsFromChild(dsWithUuid)
+      val generateUuid = udf(() => UUID.randomUUID().toString)
+      val dsWithUuid = dsNew.withColumn("uuid", generateUuid())
+      println("---- " + ds.getClass + " ----")
+      println("ds data: " + dsWithUuid.printSchema())
+      val dsWithoutAddress = dsWithUuid.drop("address")
+      dsWithoutAddress.printSchema()
+      sender() ! DsFromChildToCassandra(dsWithoutAddress)
+      sender() ! DsFromChild(dsWithoutAddress)
     }
   }
 }
@@ -107,11 +118,21 @@ class CassandraActor extends Actor with ActorLogging {
   }
 
   override def receive: Receive = {
-    case DatatoCs(ds, UserDataType) =>
-      ds.write.format("org.apache.spark.sql.cassandra")
-              .options(Map("keyspace" -> "projectjod", "table" -> "user"))
-              .mode(SaveMode.Append)
-              .save()
+    case DatatoCs(ds, UserDataType) => {
+      /*
+      val query = ds.writeStream.format("org.apache.spark.sql.cassandra")
+                    .option("keyspace", "projectjod").option("table", "user")
+                    .start()
+                    */
+      import org.apache.spark.sql.cassandra._
+
+      ds.writeStream.foreachBatch{(batchDF, _) =>
+        batchDF.write.cassandraFormat("user", "projectjod")
+          .mode("append")
+          .save()
+      }.start()
+
+    }
   }
 }
 
@@ -123,8 +144,8 @@ object SparkEngine extends App{
     .add("password", StringType)
     .add("age", IntegerType)
     .add("email", StringType)
-    .add("favSuperhero", StringType)
-    .add("whyThisSuperhero", StringType)
+    .add("favsuperhero", StringType)
+    .add("whythissuperhero", StringType)
     .add("address", new StructType()
       .add("country", StringType)
       .add("city", StringType)
@@ -154,12 +175,18 @@ object SparkEngine extends App{
   import akka.pattern.ask
   val future = sManagerActor ? SparkDataSet(ufDF, SparkManager.UserFormData, ss)
   import scala.concurrent.Await
-  val ans = Await.result(future, timeout.duration).asInstanceOf[Dataset]
+  //val ans = Await.result(future, timeout.duration).asInstanceOf[Dataset[String]]
   //writing to console
-  val result = ans.writeStream.format("console").start()
+  import scala.concurrent.ExecutionContext.Implicits.global
+  future.onSuccess{
+    case ans: Dataset[String] =>
+      val result = ans.writeStream.format("console").start()
+      result.awaitTermination()
+  }
+  //val result = ans.writeStream.format("console").start()
 
   //val result = ufDF.writeStream.outputMode("complete").format("console").start()
-  result.awaitTermination()
+  //result.awaitTermination()
 
 
 }
