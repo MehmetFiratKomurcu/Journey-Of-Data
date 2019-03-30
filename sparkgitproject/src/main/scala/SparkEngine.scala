@@ -6,6 +6,7 @@ import SparkManager.{DsFromChild, DsFromChildToCassandra, SparkDataSet}
 import akka.actor.{Actor, ActorLogging, ActorRef, ActorSystem, Props}
 import org.apache.spark.sql.types._
 import org.apache.spark.sql._
+import org.apache.spark.sql.functions.udf
 
 object SparkManager {
   def props: Props = Props(new SparkManager)
@@ -53,9 +54,9 @@ class SparkFormActor extends Actor with ActorLogging {
 
   def ageStatus(age: Int): String = {
     age match {
-      case age if age > 40 &&  age <= 65 => "Old"
-      case age if age >= 25 && age <= 40 => "middle aged"
-      case age if age >= 18 && age <=25 => "Young"
+      case _ if age > 40 &&  age <= 65 => "Old"
+      case _ if age >= 25 && age <= 40 => "middle aged"
+      case _ if age >= 18 && age <=25 => "Young"
       case _ => "age is not in range of 18-65"
     }
   }
@@ -82,16 +83,17 @@ class SparkFormActor extends Actor with ActorLogging {
       //registering as udf
       val ageStatusUDF = udf(ageStatus(_: Int): String)
       //using udf
-      //val dsWithAgeStatus = ds.select($"name", $"age", ageStatusUDF($"age").as("ageStatus"))
+      //val dsWithAgeStatus = ds.select($"a", ageStatusUDF($"age").as("agestatus"))
+      //val dsWithAgeStatus = dsNew.withColumn("agestatus", ageStatusUDF(col("age")))
       //generate uuid
       val generateUuid = udf(() => UUID.randomUUID().toString)
       val dsWithUuid = dsNew.withColumn("uuid", generateUuid())
       println("---- " + ds.getClass + " ----")
-      println("ds data: " + dsWithUuid.printSchema())
-      val dsWithoutAddress = dsWithUuid.drop("address")
-      dsWithoutAddress.printSchema()
-      sender() ! DsFromChildToCassandra(dsWithoutAddress)
-      sender() ! DsFromChild(dsWithoutAddress)
+      dsWithUuid.printSchema()
+      //val dsWithoutAddress = dsWithUuid.drop("address")
+      //dsWithoutAddress.printSchema()
+      sender() ! DsFromChildToCassandra(dsWithUuid)
+      sender() ! DsFromChild(dsWithUuid)
     }
   }
 }
@@ -102,6 +104,7 @@ object CassandraActor {
   final case class DatatoCs[T](ds : Dataset[T], dataType: dataType)
   final case class UserData(id: UUID, firstname: String, lastname: String, age: Int, favSuperhero: String,
                             whyThisSuperhero: String, Address: String)
+  final case class LogtoCs[T](ds: Dataset[T], dataType: dataType)
   trait dataType
   object UserDataType extends dataType
   object LogDataType extends dataType
@@ -133,6 +136,20 @@ class CassandraActor extends Actor with ActorLogging {
       }.start()
 
     }
+    case LogtoCs(ds, CassandraActor.LogDataType) => {
+      import org.apache.spark.sql.cassandra._
+      val generateUuid = udf(() => UUID.randomUUID().toString)
+      val dsWithUuid = ds.withColumn("uuid", generateUuid())
+
+
+      dsWithUuid.writeStream.foreachBatch{(batchDF, _) =>
+        batchDF.write.cassandraFormat("logs", "projectjod")
+          .mode("append")
+          .save()
+      }.start()
+
+
+    }
   }
 }
 
@@ -150,7 +167,7 @@ object SparkEngine extends App{
       .add("country", StringType)
       .add("city", StringType)
       .add("street", StringType)
-      .add("buildingNumber", IntegerType))
+      .add("buildingnumber", IntegerType))
 
   val ss = SparkSession.builder().appName("sparkEngine").master("local[*]")
           .config("spark.cassandra.connection.host", "127.0.0.1").getOrCreate()
@@ -164,11 +181,19 @@ object SparkEngine extends App{
     .option("subscribe", "test")
     .option("startingOffsets", """{"test": {"0":-2} }""")
     .load()
+
+  val logDf = ss.readStream.format("kafka")
+      .option("kafka.bootstrap.servers", "localhost:9092")
+      .option("subscribe", "logs")
+      .load()
+      .selectExpr("CAST(value AS STRING)")
+  logDf.printSchema()
   println("--------" + ufDF.getClass)
 
   val system = ActorSystem("ActorSystem")
   val sManagerActor = system.actorOf(SparkManager.props, "Spark-Manager-Actor")
-
+  val cassandraActor = system.actorOf(CassandraActor.props, "Cassandra-Actor")
+  cassandraActor ! CassandraActor.LogtoCs(logDf, CassandraActor.LogDataType)
   import scala.concurrent.duration._
   import akka.util.Timeout
   implicit val timeout = Timeout(5 seconds)

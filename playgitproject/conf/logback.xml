@@ -33,6 +33,40 @@
   <logger name="com.avaje.ebeaninternal.server.lib.BackgroundThread" level="OFF" />
   <logger name="com.gargoylesoftware.htmlunit.javascript" level="OFF" />
 
+  <!--- -->
+
+  <!-- This is the kafkaAppender -->
+  <appender name="kafkaAppender" class="com.github.danielwegener.logback.kafka.KafkaAppender">
+    <Marker>logs</Marker>
+    <encoder>
+      <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+    </encoder>
+    <topic>logs</topic>
+    <keyingStrategy class="com.github.danielwegener.logback.kafka.keying.NoKeyKeyingStrategy" />
+    <deliveryStrategy class="com.github.danielwegener.logback.kafka.delivery.AsynchronousDeliveryStrategy" />
+
+    <!-- Optional parameter to use a fixed partition -->
+    <!-- <partition>0</partition> -->
+
+    <!-- Optional parameter to include log timestamps into the kafka message -->
+    <appendTimestamp>true</appendTimestamp>
+
+    <!-- each <producerConfig> translates to regular kafka-client config (format: key=value) -->
+    <!-- producer configs are documented here: https://kafka.apache.org/documentation.html#newproducerconfigs -->
+    <!-- bootstrap.servers is the only mandatory producerConfig -->
+    <producerConfig>bootstrap.servers=localhost:9092</producerConfig>
+
+    <!-- this is the fallback appender if kafka is not available. -->
+    <appender-ref ref="STDOUT" />
+  </appender>
+
+
+  <root level="info">
+    <appender-ref ref="kafkaAppender" />
+  </root>
+
+  <!-- -->
+
   <root level="WARN">
     <appender-ref ref="ASYNCFILE" />
     <appender-ref ref="ASYNCSTDOUT" />

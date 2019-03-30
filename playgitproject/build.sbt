@@ -19,3 +19,8 @@ libraryDependencies += "org.apache.kafka" %% "kafka" % "2.1.1"
 
 // https://mvnrepository.com/artifact/com.twitter/chill
 libraryDependencies += "com.twitter" %% "chill" % "0.9.2"      
+
+//for send logs to kafka
+// https://mvnrepository.com/artifact/com.github.danielwegener/logback-kafka-appender
+libraryDependencies += "com.github.danielwegener" % "logback-kafka-appender" % "0.2.0-RC2"
+libraryDependencies += "ch.qos.logback" % "logback-classic" % "1.2.3"
